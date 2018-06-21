@@ -16,6 +16,7 @@
  */
 package io.github.ningyu.jmeter.plugin.dubbo.gui;
 
+import com.google.common.base.Splitter;
 import io.github.ningyu.jmeter.plugin.dubbo.sample.DubboSample;
 import io.github.ningyu.jmeter.plugin.dubbo.sample.MethodArgument;
 
@@ -23,10 +24,9 @@ import java.awt.BorderLayout;
 import java.awt.Container;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Vector;
+import java.awt.event.ItemEvent;
+import java.awt.event.ItemListener;
+import java.util.*;
 
 import javax.swing.BorderFactory;
 import javax.swing.ImageIcon;
@@ -40,6 +40,7 @@ import javax.swing.JTextField;
 import javax.swing.SwingConstants;
 import javax.swing.table.DefaultTableModel;
 
+import org.I0Itec.zkclient.ZkClient;
 import org.apache.jmeter.gui.util.HorizontalPanel;
 import org.apache.jmeter.gui.util.VerticalPanel;
 import org.apache.jmeter.samplers.gui.AbstractSamplerGui;
@@ -61,6 +62,9 @@ public class DubboSampleGui extends AbstractSamplerGui {
     
     private JComboBox<String> registryProtocolText;
     private JComboBox<String> rpcProtocolText;
+    private static JComboBox<String> interfaceSelect;
+    private static JComboBox<String> methodSelect;
+    private static JButton interfaceReadButton;
     private JTextField addressText;
     private JTextField timeoutText;
     private JTextField versionText;
@@ -105,23 +109,36 @@ public class DubboSampleGui extends AbstractSamplerGui {
         protocolLable.setLabelFor(registryProtocolText);
         ph.add(protocolLable);
         ph.add(registryProtocolText);
-        registrySettings.add(ph);
+        registryProtocolText.addItemListener(new ItemListener() {
+            @Override
+            public void itemStateChanged(ItemEvent e) {
+                String itemString = e.getItem().toString();
+                if ("zookeeper".equals(itemString)) {
+                    interfaceReadButton.setEnabled(true);
+                } else {
+                    interfaceReadButton.setEnabled(false);
+                }
+            }
+        });
         //Address
-        JPanel ah = new HorizontalPanel();
+//        JPanel ah = new HorizontalPanel();
         JLabel addressLable = new JLabel("Address:", SwingConstants.RIGHT);
         addressText = new JTextField(textColumns);
         addressLable.setLabelFor(addressText);
         JLabel addressHelpLable = new JLabel();
         addressHelpLable.setIcon(new ImageIcon(getClass().getResource("/images/help.png")));
         addressHelpLable.setToolTipText("Use the registry to allow multiple addresses, Use direct connection to allow only one address! Multiple address format: ip1:port1,ip2:port2 . Direct address format: ip:port . ");
-        ah.add(addressLable);
-        ah.add(addressText);
-        ah.add(addressHelpLable);
-        registrySettings.add(ah);
+        ph.add(addressLable);
+        ph.add(addressText);
+        ph.add(addressHelpLable);
+
+        registrySettings.add(ph);
+
+//        registrySettings.add(ah);
         
         //RPC Protocol Settings
         JPanel protocolSettings = new VerticalPanel();
-        protocolSettings.setBorder(BorderFactory.createTitledBorder("RPC Protocol Settings"));
+        protocolSettings.setBorder(BorderFactory.createTitledBorder("RPC Protocol Settings & Async Setting"));
         //RPC Protocol
         JPanel rpcPh = new HorizontalPanel();
         JLabel rpcProtocolLable = new JLabel("Protocol:", SwingConstants.RIGHT);
@@ -129,6 +146,21 @@ public class DubboSampleGui extends AbstractSamplerGui {
         rpcProtocolLable.setLabelFor(rpcProtocolText);
         rpcPh.add(rpcProtocolLable);
         rpcPh.add(rpcProtocolText);
+
+//        JPanel hp1 = new HorizontalPanel();
+        //Async
+        JLabel asyncLable = new JLabel("     Async:", SwingConstants.RIGHT);
+        asyncText = new JComboBox<String>(new String[]{"sync", "async"});
+        asyncLable.setLabelFor(asyncText);
+        rpcPh.add(asyncLable);
+        rpcPh.add(asyncText);
+        //Loadbalance
+        JLabel loadbalanceLable = new JLabel("Loadbalance:", SwingConstants.RIGHT);
+        loadbalanceText = new JComboBox<String>(new String[]{"random", "roundrobin", "leastactive", "consistenthash"});
+        loadbalanceLable.setLabelFor(loadbalanceText);
+        rpcPh.add(loadbalanceLable);
+        rpcPh.add(loadbalanceText);
+
         protocolSettings.add(rpcPh);
         
         //Consumer Settings
@@ -185,24 +217,84 @@ public class DubboSampleGui extends AbstractSamplerGui {
         h.add(responseEncodingText);
         consumerSettings.add(h);
         
-        JPanel hp1 = new HorizontalPanel();
-        //Async
-        JLabel asyncLable = new JLabel("     Async:", SwingConstants.RIGHT);
-        asyncText = new JComboBox<String>(new String[]{"sync", "async"});
-        asyncLable.setLabelFor(asyncText);
-        hp1.add(asyncLable);
-        hp1.add(asyncText);
-        //Loadbalance
-        JLabel loadbalanceLable = new JLabel("Loadbalance:", SwingConstants.RIGHT);
-        loadbalanceText = new JComboBox<String>(new String[]{"random", "roundrobin", "leastactive", "consistenthash"});
-        loadbalanceLable.setLabelFor(loadbalanceText);
-        hp1.add(loadbalanceLable);
-        hp1.add(loadbalanceText);
-        consumerSettings.add(hp1);
-        
         //Interface Settings
         JPanel interfaceSettings = new VerticalPanel();
         interfaceSettings.setBorder(BorderFactory.createTitledBorder("Interface Settings"));
+        //interface zk read
+
+        HorizontalPanel interfaceSelectPannel = new HorizontalPanel();
+        JLabel l1 = new JLabel("Interface:", SwingConstants.RIGHT);
+        interfaceSelect = new JComboBox<>();
+        l1.setLabelFor(interfaceSelect);
+        interfaceSelectPannel.add(l1);
+        interfaceSelectPannel.add(interfaceSelect);
+
+        interfaceSelect.addItemListener(new ItemListener() {
+            @Override
+            public void itemStateChanged(ItemEvent e) {
+                String interfaceName = e.getItem().toString();
+                if ( ! interfaceName.startsWith("com")) {
+                    return;
+                }
+                interfaceText.setText(interfaceName);
+                methodSelect.removeAllItems();
+                String address = addressText.getText();
+                String group = groupText.getText();
+                if (address != null && !address.isEmpty()) {
+                    Map<String, Object> resultMap = readMethodFromInterface(address, group, interfaceName);
+                    List<String> methods = (List<String>) resultMap.get("methods");
+                    if (methods != null) {
+                        for (String method : methods) {
+                            methodSelect.addItem(method);
+                        }
+                    }
+                    String version = (String) resultMap.get("version");
+                    if (version != null) {
+                        versionText.setText(version);
+                    }
+                    String revision = (String) resultMap.get("revision");
+
+                }
+            }
+        });
+
+        JLabel methodlabel = new JLabel("Method:", SwingConstants.RIGHT);
+        methodSelect = new JComboBox<>();
+        methodlabel.setLabelFor(methodSelect);
+        interfaceSelectPannel.add(methodlabel);
+        interfaceSelectPannel.add(methodSelect);
+
+        methodSelect.addItemListener(new ItemListener() {
+            @Override
+            public void itemStateChanged(ItemEvent e) {
+                String methodName = e.getItem().toString();
+                methodText.setText(methodName);
+            }
+        });
+
+        interfaceReadButton = new JButton("读取zk");
+        interfaceReadButton.setEnabled(false);
+
+        interfaceReadButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                //读取zk
+                String address = addressText.getText();
+                String group = groupText.getText();
+                if (address != null && !address.isEmpty()) {
+                    java.util.List<String> interfaces = readInterfaceFromZK(address, group);
+                    interfaceSelect.removeAllItems();
+                    for (String anInterface : interfaces) {
+                        interfaceSelect.addItem(anInterface);
+                    }
+                }
+
+            }
+        });
+
+        interfaceSelectPannel.add(interfaceReadButton);
+        interfaceSettings.add(interfaceSelectPannel);
+
         //Interface
         JPanel ih = new HorizontalPanel();
         JLabel interfaceLable = new JLabel("Interface:", SwingConstants.RIGHT);
@@ -401,6 +493,55 @@ public class DubboSampleGui extends AbstractSamplerGui {
         model.setDataVector(null, columnNames);
     }
 
+    private ZkClient zkClient;
+
+    private List<String> readInterfaceFromZK(String address, String group) {
+        if (zkClient != null) {
+            zkClient.close();
+        }
+        zkClient = new ZkClient(address,10000);
+        if (group == null || group.isEmpty()) {
+            group = "/";
+        }
+        if (!group.startsWith("/")) {
+            group = "/"+group;
+        }
+        List<String> children = zkClient.getChildren(group);
+        return children;
+    }
+
+    private Map<String,Object> readMethodFromInterface(String address, String group, String inter) {
+
+        if (zkClient == null ) {
+            zkClient = new ZkClient(address,10000);
+        }
+        if (group == null || group.isEmpty()) {
+            group = "/";
+        }
+        if (!group.startsWith("/")) {
+            group = "/"+group;
+        }
+        Map<String,Object> result = new HashMap<>();
+        try {
+            List<String> children = zkClient.getChildren(group + "/" + inter + "/providers");
+            if (children != null && children.size() > 0) {
+                String desc = children.get(0);
+                Map<String, String> splitMap = Splitter.on("%26").trimResults().withKeyValueSeparator("%3D").split(desc);
+                String methods = splitMap.get("methods");
+                List<String> methodList = Splitter.on("%2C").trimResults().splitToList(methods);
+                result.put("methods", methodList);
+                if (splitMap.containsKey("version")) {
+                    result.put("version", splitMap.get("version"));
+                }
+                if (splitMap.containsKey("revision")) {
+                    result.put("revision", splitMap.get("revision"));
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return result;
+    }
 }
 
 
